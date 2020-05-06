@@ -14,7 +14,12 @@ import org.springframework.web.bind.annotation.RestController;
 
 import javax.inject.Inject;
 import javax.servlet.http.HttpServletRequest;
+import java.io.ByteArrayInputStream;
+import java.io.UnsupportedEncodingException;
+import java.net.URLDecoder;
 import java.security.Principal;
+import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 
 import static org.springframework.web.bind.annotation.RequestMethod.GET;
@@ -35,9 +40,7 @@ public class SslClientAuthenticationTestResource {
   @RequestMapping(method = GET, value = "/sslclientauthenticationtest", produces = { MediaType.TEXT_PLAIN_VALUE })
   @ApiOperation(value = "Returns the distinguished name for the received SSL client certificate")
   public ResponseEntity<String> doIt() {
-    X509Certificate[] clientCertificateChain = (X509Certificate[]) request
-        .getAttribute("javax.servlet.request.X509Certificate");
-    X509Certificate clientCertificate = clientCertificateChain[0];
+    X509Certificate clientCertificate = getClientCertificate(request);
     OcspUtils ocspUtils = new OcspUtils(env.getProperty("ocsp.cachedDir"));
     try {
       Principal subjectDN = clientCertificate.getSubjectDN();
@@ -91,5 +94,31 @@ public class SslClientAuthenticationTestResource {
           HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
+
+    /**
+     * TODO instead of writing this logic here at the application level try to extend the underlying framework so maybe the client certificate can still be get as the 'javax.servlet.request.X509Certificate' request property, irrespective of it being processed by the TLS layer at the application level or the reverse proxy level.
+     */
+    private X509Certificate getClientCertificate(HttpServletRequest request) {
+        try {
+            X509Certificate clientCertificate = null;
+            X509Certificate[] clientCertificates = (X509Certificate[]) request
+                    .getAttribute("javax.servlet.request.X509Certificate");
+            if (clientCertificates != null) {
+                clientCertificate = clientCertificates[0];
+            } else {
+                // TODO IMPORTANT: confirm if this is really secure to receive the client certificate from this header considering that this may potentially be arbitrarily set by a malicious user!.
+                String clientCertificateFromHttpHeader = request.getHeader("X-SSL-Cert");
+                if (clientCertificateFromHttpHeader != null) {
+                    // TODO confirm if it is really incoming in UTF-8 encoding.
+                    clientCertificateFromHttpHeader = URLDecoder.decode(clientCertificateFromHttpHeader, "UTF-8");
+                    // TODO confirm if 'clientCertificateFromHttpHeader' will always include one certificate and if the following would work just right if 'clientCertificateFromHttpHeader' happens to include more than one certificate.
+                    clientCertificate = (X509Certificate) CertificateFactory.getInstance("X.509").generateCertificate(new ByteArrayInputStream(clientCertificateFromHttpHeader.getBytes()));
+                }
+            }
+            return clientCertificate;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
 
 }
